@@ -6,6 +6,7 @@ import os
 from dotenv import load_dotenv
 from .vlm import VLM
 from .transcriptionanalysis import TranscriptionAnalysis
+from .llmsynthesis import LLMSynthesis
 import uvicorn
 
 
@@ -23,6 +24,7 @@ AUTH_TOKEN = os.environ.get("API_AUTH_TOKEN")
 # Initialize service instances
 vlm_service = VLM()
 transcription_service = TranscriptionAnalysis()
+synthesis_service = LLMSynthesis()
 
 
 # Pydantic models for request/response validation
@@ -80,6 +82,38 @@ class TranscriptionAnalysisResponse(BaseModel):
         }
 
 
+class SynthesisRequest(BaseModel):
+    transcription_analysis: str = Field(
+        ..., description="JSON string containing the transcription analysis result"
+    )
+    surrounding_analysis: list[str] = Field(
+        ..., description="List of JSON strings containing VLM analysis results"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "transcription_analysis": '{"context": "User asking about nearby objects", "keywords": ["where", "counter"], "domain": "casual", "actions": ["locate object"], "tone": "inquisitive", "confidence": 0.91}',
+                "surrounding_analysis": [
+                    '{"hazard": "none", "people": "2 ahead 1.5 m", "actions": ["walking forward"], "objects": ["counter front 3 m"], "path": "clear left 4 m", "notes": "daylight", "confidence": 0.93}'
+                ],
+            }
+        }
+
+
+class SynthesisResponse(BaseModel):
+    response: str = Field(
+        ..., description="Conversational response synthesizing audio and visual context"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "response": "The counter you're asking about is directly in front of you, about 3 meters away. There are a couple of people ahead walking forward, about 1.5 meters from you. The path to your left is clear if you need to move around them."
+            }
+        }
+
+
 # Authentication dependency
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Verify the bearer token for authentication"""
@@ -101,6 +135,7 @@ async def health():
         "endpoints": {
             "vlm": "/api/vlm",
             "transcription_analysis": "/api/transcription-analysis",
+            "synthesis": "/api/synthesize",
         },
     }
 
@@ -164,6 +199,38 @@ async def analyze_transcript(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error analyzing transcript: {str(e)}",
+        )
+
+
+@app.post(
+    "/api/synthesize",
+    response_model=SynthesisResponse,
+    tags=["Synthesis"],
+    summary="Synthesize transcription and visual analyses",
+    description="Combines transcription analysis and visual scene analyses into a conversational response",
+)
+async def synthesize(request: SynthesisRequest, token: str = Depends(verify_token)):
+    """
+    Synthesize transcription analysis and visual scene analyses into a conversational response.
+
+    - **transcription_analysis**: JSON string containing the transcription analysis result
+    - **surrounding_analysis**: List of JSON strings containing VLM analysis results from multiple frames
+
+    Returns a natural, conversational response that combines the audio context with the visual scene information,
+    suitable for speaking to the user.
+    """
+    try:
+        response = synthesis_service.synthesize(
+            transcription_analysis=request.transcription_analysis,
+            surrounding_analysis=request.surrounding_analysis,
+        )
+        return SynthesisResponse(response=response)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error synthesizing response: {str(e)}",
         )
 
 
